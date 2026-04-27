@@ -1,93 +1,214 @@
-
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, render_template, session 
 from flask_cors import CORS
-from flask_sqlalchemy import SQLAlchemy
-from flask_session import Session
-from flask_bcrypt import Bcrypt
-from datetime import datetime
-import os
+from icecream import ic
+import uuid
+import time
+import x
+
+ic.configureOutput(prefix=f"_____ | ", includeContext=True)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'wash-world-secret-key'
-app.config['SESSION_TYPE'] = 'filesystem'
-CORS(app, origins=['http://localhost:5173'], supports_credentials=True)
-Session(app)
-bcrypt = Bcrypt(app)
+app.secret_key = "wash-world-secret-key"
+CORS(app)
 
-# Database (MariaDB eller SQLite til start)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///washworld.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
+##############################
+@app.get("/")
+def index():
+    return jsonify({
+        "status": "ok",
+        "message": "Wash World backend connected"
+    }), 200
 
-# Modeller (tilpas til vaskeri - f.eks. bookings, maskiner)12
-class User(db.Model):
-    __tablename__ = 'user'
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
-    
-    @property
-    def password(self):
-        raise AttributeError('password not readable')
-    
-    @password.setter
-    def password(self, plain_password):
-        self.password_hash = bcrypt.generate_password_hash(plain_password).decode('utf-8')
-    
-    def verify_password(self, plain_password):
-        return bcrypt.check_password_hash(self.password_hash, plain_password)
 
-# Eksempel på booking model (tilpas til dit behov)
-class Booking(db.Model):
-    __tablename__ = 'booking'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    machine_type = db.Column(db.String(50), nullable=False)
-    booking_time = db.Column(db.DateTime, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+##############################
+@app.get("/api-locations")
+def get_locations():
+    try:
+        # Fake data først. Senere skifter vi det til database.
+        return jsonify({
+            "locations": [
+                {
+                    "location_pk": "1",
+                    "name": "Wash World Køge",
+                    "address": "Køge",
+                    "queue": 3,
+                    "status": "open"
+                },
+                {
+                    "location_pk": "2",
+                    "name": "Wash World Ishøj",
+                    "address": "Ishøj",
+                    "queue": 6,
+                    "status": "open"
+                },
+                {
+                    "location_pk": "3",
+                    "name": "Wash World Roskilde",
+                    "address": "Roskilde",
+                    "queue": 1,
+                    "status": "open"
+                }
+            ]
+        }), 200
 
-# Opret tabeller
-with app.app_context():
-    db.create_all()
+    except Exception as ex:
+        ic(ex)
+        return str(ex), 500
+    finally:
+        pass
 
-# API Endpoints
-@app.route('/api/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'ok'})
 
-@app.route('/api/signup', methods=['POST'])
-def signup():
-    data = request.json
-    if not data.get('username') or not data.get('password'):
-        return jsonify({'error': 'Username and password required'}), 400
-    if User.query.filter_by(username=data['username']).first():
-        return jsonify({'error': 'Username exists'}), 400
-    
-    user = User(username=data['username'], password=data['password'])
-    db.session.add(user)
-    db.session.commit()
-    return jsonify({'message': 'User created'}), 201
+##############################
+@app.get("/api-users")
+def get_users():
+    try:
+        db, cursor = x.db()
 
-@app.route('/api/login', methods=['POST'])
+        q = "SELECT * FROM users"
+        cursor.execute(q)
+
+        rows = cursor.fetchall()
+
+        return jsonify({"users": rows}), 200
+
+    except Exception as ex:
+        ic(ex)
+        return str(ex), 500
+
+    finally:
+        if "cursor" in locals(): cursor.close()
+        if "db" in locals(): db.close()
+
+
+##############################
+@app.post("/api-sign-up")
+def sign_up():
+    try:
+        user_first_name = x.validate_user_first_name()
+        user_last_name = x.validate_user_last_name()
+        user_email = x.validate_email(request.form.get("user_email", ""))
+        user_password = x.validate_user_password(request.form.get("user_password", ""))
+
+        user_pk = uuid.uuid4().hex
+        user_created_at = int(time.time())
+
+        db, cursor = x.db()
+
+        q = """
+            INSERT INTO users
+            (user_pk, user_first_name, user_last_name, user_email, user_password, user_created_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+
+        cursor.execute(q, (
+            user_pk,
+            user_first_name,
+            user_last_name,
+            user_email,
+            user_password,
+            user_created_at
+        ))
+
+        db.commit()
+
+        return jsonify({
+            "message": "User created",
+            "user_pk": user_pk
+        }), 201
+
+    except Exception as ex:
+        ic(ex)
+
+        if "company_exception user_first_name" in str(ex):
+            return f"First name must be {x.USER_FIRST_NAME_MIN} to {x.USER_FIRST_NAME_MAX} characters", 400
+
+        if "company_exception user_last_name" in str(ex):
+            return f"Last name must be {x.USER_LAST_NAME_MIN} to {x.USER_LAST_NAME_MAX} characters", 400
+
+        if "company_exception email" in str(ex):
+            return "Invalid email", 400
+
+        if "company_exception user_password" in str(ex):
+            return f"Password must be {x.USER_PASSWORD_MIN} to {x.USER_PASSWORD_MAX} characters", 400
+
+        return str(ex), 500
+
+    finally:
+        if "cursor" in locals(): cursor.close()
+        if "db" in locals(): db.close()
+
+
+##############################
+@app.post("/api-login")
 def login():
-    data = request.json
-    user = User.query.filter_by(username=data.get('username')).first()
-    if user and user.verify_password(data.get('password')):
-        session['user_id'] = user.id
-        session['username'] = user.username
-        return jsonify({'message': 'Login successful', 'user_id': user.id, 'username': user.username})
-    return jsonify({'error': 'Invalid credentials'}), 401
+    try:
+        user_email = x.validate_email(request.form.get("user_email", ""))
+        user_password = x.validate_user_password(request.form.get("user_password", ""))
 
-@app.route('/api/logout', methods=['POST'])
+        db, cursor = x.db()
+
+        q = """
+            SELECT user_pk, user_first_name, user_last_name, user_email
+            FROM users
+            WHERE user_email = %s AND user_password = %s
+        """
+
+        cursor.execute(q, (user_email, user_password))
+        user = cursor.fetchone()
+
+        if not user:
+            return "Invalid email or password", 401
+
+        session["user"] = user
+
+        return jsonify({
+            "message": "Login successful",
+            "user": user
+        }), 200
+
+    except Exception as ex:
+        ic(ex)
+
+        if "company_exception email" in str(ex):
+            return "Invalid email", 400
+
+        if "company_exception user_password" in str(ex):
+            return f"Password must be {x.USER_PASSWORD_MIN} to {x.USER_PASSWORD_MAX} characters", 400
+
+        return str(ex), 500
+
+    finally:
+        if "cursor" in locals(): cursor.close()
+        if "db" in locals(): db.close()
+
+
+##############################
+@app.post("/api-logout")
 def logout():
-    session.clear()
-    return jsonify({'message': 'Logged out'})
+    try:
+        session.clear()
+        return jsonify({"message": "Logged out"}), 200
 
-@app.route('/api/me', methods=['GET'])
+    except Exception as ex:
+        ic(ex)
+        return str(ex), 500
+    finally:
+        pass
+
+
+##############################
+@app.get("/api-me")
 def me():
-    if 'user_id' not in session:
-        return jsonify({'error': 'Not logged in'}), 401
-    return jsonify({'user_id': session['user_id'], 'username': session['username']})
+    try:
+        if "user" not in session:
+            return "Not logged in", 401
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+        return jsonify({
+            "user": session["user"]
+        }), 200
+
+    except Exception as ex:
+        ic(ex)
+        return str(ex), 500
+    finally:
+        pass
